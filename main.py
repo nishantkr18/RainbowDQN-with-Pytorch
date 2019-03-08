@@ -1,6 +1,7 @@
 from q_learning import *
 from q_networks.vanilla_dqn import VanillaDQN
 from q_networks.dueling_dqn import DuelingDQN
+from q_networks.noisy_dqn import NoisyDQN
 from replay.random_replay import RandomReplay
 
 # environment
@@ -28,6 +29,9 @@ network = VanillaDQN(obs_dim, 128, action_dim)
 
 # Using Dueling DQN
 network = DuelingDQN(obs_dim, 128, action_dim)
+
+# Using Noisy DQN
+network = NoisyDQN(obs_dim, 128, action_dim)
 #-----------------------------------------------------
 
 # Initilizing the agent

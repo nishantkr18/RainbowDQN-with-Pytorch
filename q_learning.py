@@ -24,6 +24,7 @@ class DQNAgent:
         target_update: int,
         epsilon_decay: float,
         double_dqn: bool = False,
+        is_noisy: bool = False,
         max_epsilon: float = 1.0,
         min_epsilon: float = 0.1,
         gamma: float = 0.99,
@@ -42,6 +43,7 @@ class DQNAgent:
         self.target_update = target_update
         self.gamma = gamma
         self.double_dqn = double_dqn
+        self.is_noisy = is_noisy
         
         # device: cpu / gpu
         self.device = torch.device(
@@ -66,7 +68,9 @@ class DQNAgent:
     def select_action(self, state: np.ndarray) -> np.ndarray:
         """Select an action from the input state."""
         # epsilon greedy policy
-        if self.epsilon > np.random.random():
+
+        # no epsilon greedy for NoisyNet
+        if self.epsilon > np.random.random() and self.is_noisy == False:
             selected_action = self.env.action_space.sample()
         else:
             selected_action = self.dqn(
@@ -98,6 +102,11 @@ class DQNAgent:
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        # NoisyNet: reset noise
+        if(self.is_noisy == True):
+            self.dqn.reset_noise()
+            self.dqn_target.reset_noise()
 
         return loss.item()
         
