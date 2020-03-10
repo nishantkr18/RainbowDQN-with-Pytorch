@@ -2,6 +2,7 @@ from q_learning import *
 from q_networks.vanilla_dqn import VanillaDQN
 from q_networks.dueling_dqn import DuelingDQN
 from q_networks.noisy_dqn import NoisyDQN
+from q_networks.categorical_dqn import CategoricalDQN
 from replay.random_replay import RandomReplay
 
 # environment
@@ -16,26 +17,41 @@ target_update = 100
 epsilon_decay = 1 / 2000
 obs_dim = env.observation_space.shape[0]
 action_dim = env.action_space.n
-
-#----------------------------------------------------
-# Double DQN use can be enabled using this
-double_dqn = True
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # for experience replay to be randomly sampled
 replay_method = RandomReplay(obs_dim, memory_size, batch_size)
 
+# Double DQN use can be enabled using this
+double_dqn = True
+
+#----------------------------------------------------
 # Using the simplest DQN
 network = VanillaDQN(obs_dim, 128, action_dim)
+agent = DQNAgent(env, network, replay_method, memory_size, batch_size, target_update, epsilon_decay, double_dqn)
 
 # Using Dueling DQN
 network = DuelingDQN(obs_dim, 128, action_dim)
+agent = DQNAgent(env, network, replay_method, memory_size, batch_size, target_update, epsilon_decay, double_dqn)
 
 # Using Noisy DQN
 network = NoisyDQN(obs_dim, 128, action_dim)
-#-----------------------------------------------------
+agent = DQNAgent(env, network, replay_method, 
+				memory_size, batch_size, target_update, 
+				epsilon_decay, double_dqn=True, is_noisy=True) # is_noisy creates two conditions: resets noise after each update & removes epsilon greedy from action_selection
 
-# Initilizing the agent
-agent = DQNAgent(env, network, replay_method, memory_size, batch_size, target_update, epsilon_decay, double_dqn)
+# using Categorical DQN
+v_min = 0.0
+v_max = 200.0
+atom_size = 51
+support = torch.linspace(v_min, v_max, atom_size).to(device)
+network = CategoricalDQN(obs_dim, 128, action_dim, atom_size, support) 
+agent = DQNAgent(env, network, replay_method, 
+				memory_size, batch_size, target_update, 
+				epsilon_decay, double_dqn=True, is_noisy=False, 
+				is_categorical=True, v_min=v_min, v_max=v_max, # is_categorical enables the special loss function calculation for categorical DQN
+				atom_size=atom_size)
+#-----------------------------------------------------
 
 # Training the agent
 agent.train(num_frames)

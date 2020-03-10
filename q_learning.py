@@ -25,9 +25,14 @@ class DQNAgent:
         epsilon_decay: float,
         double_dqn: bool = False,
         is_noisy: bool = False,
+        is_categorical: bool = False,
         max_epsilon: float = 1.0,
         min_epsilon: float = 0.1,
         gamma: float = 0.99,
+        # Categorical DQN parameters
+        v_min: float = 0.0,
+        v_max: float = 200.0,
+        atom_size: int = 51,
     ):
 
         obs_dim = env.observation_space.shape[0]
@@ -44,12 +49,21 @@ class DQNAgent:
         self.gamma = gamma
         self.double_dqn = double_dqn
         self.is_noisy = is_noisy
+        self.is_categorical = is_categorical
         
         # device: cpu / gpu
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
-        print(self.device)
+        print('Using ',self.device)
+
+        # Categorical DQN parameters
+        self.v_min = v_min
+        self.v_max = v_max
+        self.atom_size = atom_size
+        self.support = torch.linspace(
+            self.v_min, self.v_max, self.atom_size
+        ).to(self.device)
 
         # networks: dqn, dqn_target
         self.dqn = network.to(self.device)
@@ -174,7 +188,7 @@ class DQNAgent:
             state = next_state
             score += reward
         
-        print("score: ", score)
+        print("score while testing: ", score)
         self.env.close()
 
     def _compute_dqn_loss(self, samples: Dict[str, np.ndarray]) -> torch.Tensor:
@@ -186,25 +200,62 @@ class DQNAgent:
         reward = torch.FloatTensor(samples["rews"].reshape(-1, 1)).to(device)
         done = torch.FloatTensor(samples["done"].reshape(-1, 1)).to(device)
 
-        # G_t   = r + gamma * v(s_{t+1})  if state != Terminal
-        #       = r                       otherwise
-        curr_q_value = self.dqn(state).gather(1, action)
+        # for Categorical DQN
+        if(self.is_categorical == True):
+            delta_z = float(self.v_max - self.v_min) / (self.atom_size - 1)
 
-        #! The condition for double DQN
-        if self.double_dqn == True:
-        	next_q_value = self.dqn_target(next_state).gather(  # Double DQN
-            	1, self.dqn(next_state).argmax(dim=1, keepdim=True)
-        	).detach()
-        else:
-	        next_q_value = self.dqn_target(
-	            next_state
-	        ).max(dim=1, keepdim=True)[0].detach()
+            with torch.no_grad():
+                next_action = self.dqn_target(next_state).argmax(1)
+                next_dist = self.dqn_target.dist(next_state)
+                next_dist = next_dist[range(self.batch_size), next_action]
 
-        mask = 1 - done
-        target = (reward + self.gamma * next_q_value * mask).to(self.device)
+                t_z = reward + (1 - done) * self.gamma * self.support
+                t_z = t_z.clamp(min=self.v_min, max=self.v_max)
+                b = (t_z - self.v_min) / delta_z
+                l = b.floor().long()
+                u = b.ceil().long()
 
-        # calculate dqn loss
-        loss = F.smooth_l1_loss(curr_q_value, target)
+                offset = (
+                    torch.linspace(
+                        0, (self.batch_size - 1) * self.atom_size, self.batch_size
+                    ).long()
+                    .unsqueeze(1)
+                    .expand(self.batch_size, self.atom_size)
+                    .to(self.device)
+                )
+
+                proj_dist = torch.zeros(next_dist.size(), device=self.device)
+                proj_dist.view(-1).index_add_(
+                    0, (l + offset).view(-1), (next_dist * (u.float() - b)).view(-1)
+                )
+                proj_dist.view(-1).index_add_(
+                    0, (u + offset).view(-1), (next_dist * (b - l.float())).view(-1)
+                )
+
+            dist = self.dqn.dist(state)
+            log_p = torch.log(dist[range(self.batch_size), action])
+
+            loss = -(proj_dist * log_p).sum(1).mean()
+        else:    
+            # G_t   = r + gamma * v(s_{t+1})  if state != Terminal
+            #       = r                       otherwise
+            curr_q_value = self.dqn(state).gather(1, action)
+
+            #! The condition for double DQN
+            if self.double_dqn == True:
+            	next_q_value = self.dqn_target(next_state).gather(  # Double DQN
+                	1, self.dqn(next_state).argmax(dim=1, keepdim=True)
+            	).detach()
+            else:
+    	        next_q_value = self.dqn_target(
+    	            next_state
+    	        ).max(dim=1, keepdim=True)[0].detach()
+
+            mask = 1 - done
+            target = (reward + self.gamma * next_q_value * mask).to(self.device)
+
+            # calculate dqn loss
+            loss = F.smooth_l1_loss(curr_q_value, target)
 
         return loss
 
