@@ -9,6 +9,7 @@ import copy
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.nn.utils import clip_grad_norm_
 from IPython.display import clear_output
 
 
@@ -36,7 +37,11 @@ class DQNAgent:
         # for n-step learning
         n_step: int = 1,
         memory_n = None,
-
+        # PER parameters
+        alpha: float = 0.2,
+        beta: float = 0.6,
+        prior_eps: float = 1e-6,
+        PER: bool = False,
     ):
 
         obs_dim = env.observation_space.shape[0]
@@ -55,6 +60,9 @@ class DQNAgent:
         self.is_noisy = is_noisy
         self.is_categorical = is_categorical
         self.n_step = n_step
+        self.beta = beta
+        self.prior_eps = prior_eps
+        self.PER = PER
 
         # for N-step Learning
         self.use_n_step = True if n_step > 1 else False
@@ -66,6 +74,8 @@ class DQNAgent:
             "cuda" if torch.cuda.is_available() else "cpu"
         )
         print('Using ',self.device)
+
+
 
         # Categorical DQN parameters
         self.v_min = v_min
@@ -130,22 +140,48 @@ class DQNAgent:
     def update_model(self) -> torch.Tensor:
         """Update the model by gradient descent."""
         samples = self.memory.sample_batch()
-
-        loss = self._compute_dqn_loss(samples)
+        
+        # 1-step Learning loss
+        elementwise_loss = self._compute_dqn_loss(samples, self.gamma)
+        
+        if(self.PER==True):
+            weights = torch.FloatTensor(
+                samples["weights"].reshape(-1, 1)
+            ).to(self.device)
+            # PER: importance sampling before average
+            loss = torch.mean(elementwise_loss * weights)
+        else:
+            loss = torch.mean(elementwise_loss)
 
         # N-step Learning loss
         # we are gonna combine 1-step loss and n-step loss so as to
         # prevent high-variance.
         indices = samples["indices"]
         if self.use_n_step:
-            samples = self.memory_n.sample_batch_from_idxs(indices)
             gamma = self.gamma ** self.n_step
-            n_loss = self._compute_dqn_loss(samples, gamma)
-            loss += n_loss
+            samples = self.memory_n.sample_batch_from_idxs(indices)
+            elementwise_loss_n_loss = self._compute_dqn_loss(samples, gamma)
+            elementwise_loss += elementwise_loss_n_loss
+
+            # PER: importance sampling before average
+            if(self.PER==True):
+                weights = torch.FloatTensor(
+                    samples["weights"].reshape(-1, 1)
+                ).to(self.device)
+                loss = torch.mean(elementwise_loss * weights)
+            else:
+                loss = torch.mean(elementwise_loss)
 
         self.optimizer.zero_grad()
         loss.backward()
+        clip_grad_norm_(self.dqn.parameters(), 10.0)
         self.optimizer.step()
+
+        if(self.PER == True):
+            # PER: update priorities
+            loss_for_prior = elementwise_loss.detach().cpu().numpy()
+            new_priorities = loss_for_prior + self.prior_eps
+            self.memory.update_priorities(indices, new_priorities)
 
         # NoisyNet: reset noise
         if(self.is_noisy == True):
@@ -154,7 +190,7 @@ class DQNAgent:
 
         return loss.item()
         
-    def train(self, num_frames: int, plotting_interval: int = 1000):
+    def train(self, num_frames: int, plotting_interval: int = 500):
         """Train the agent."""
         self.is_test = False
         
@@ -171,6 +207,10 @@ class DQNAgent:
 
             state = next_state
             score += reward
+
+            # PER: increase beta
+            fraction = min(frame_idx / num_frames, 1.0)
+            self.beta = self.beta + fraction * (1.0 - self.beta)
 
             # if episode ends
             if done:
@@ -221,7 +261,7 @@ class DQNAgent:
         print("score while testing: ", score)
         self.env.close()
 
-    def _compute_dqn_loss(self, samples: Dict[str, np.ndarray]) -> torch.Tensor:
+    def _compute_dqn_loss(self, samples: Dict[str, np.ndarray], gamma: float) -> torch.Tensor:
         """Return dqn loss."""
         device = self.device  # for shortening the following lines
         state = torch.FloatTensor(samples["obs"]).to(device)
@@ -235,7 +275,10 @@ class DQNAgent:
             delta_z = float(self.v_max - self.v_min) / (self.atom_size - 1)
 
             with torch.no_grad():
-                next_action = self.dqn_target(next_state).argmax(1)
+                if self.double_dqn == True:
+                    next_action = self.dqn(next_state).argmax(1)
+                else:
+                    next_action = self.dqn_target(next_state).argmax(1)
                 next_dist = self.dqn_target.dist(next_state)
                 next_dist = next_dist[range(self.batch_size), next_action]
 
@@ -264,8 +307,8 @@ class DQNAgent:
 
             dist = self.dqn.dist(state)
             log_p = torch.log(dist[range(self.batch_size), action])
-
-            loss = -(proj_dist * log_p).sum(1).mean()
+            elementwise_loss = -(proj_dist * log_p).sum(1)
+            return elementwise_loss
         else:    
             # G_t   = r + gamma * v(s_{t+1})  if state != Terminal
             #       = r                       otherwise
@@ -284,10 +327,9 @@ class DQNAgent:
             mask = 1 - done
             target = (reward + self.gamma * next_q_value * mask).to(self.device)
 
-            # calculate dqn loss
-            loss = F.smooth_l1_loss(curr_q_value, target)
-
-        return loss
+            # calculate element-wise dqn loss
+            elementwise_loss = F.smooth_l1_loss(curr_q_value, target, reduction="none")
+            return elementwise_loss
 
     def _target_hard_update(self):
         """Hard update: target <- local."""
