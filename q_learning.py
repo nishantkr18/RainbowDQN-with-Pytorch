@@ -33,6 +33,10 @@ class DQNAgent:
         v_min: float = 0.0,
         v_max: float = 200.0,
         atom_size: int = 51,
+        # for n-step learning
+        n_step: int = 1,
+        memory_n = None,
+
     ):
 
         obs_dim = env.observation_space.shape[0]
@@ -50,7 +54,13 @@ class DQNAgent:
         self.double_dqn = double_dqn
         self.is_noisy = is_noisy
         self.is_categorical = is_categorical
-        
+        self.n_step = n_step
+
+        # for N-step Learning
+        self.use_n_step = True if n_step > 1 else False
+        if(self.use_n_step):
+            self.memory_n = memory_n
+
         # device: cpu / gpu
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
@@ -103,7 +113,17 @@ class DQNAgent:
 
         if not self.is_test:
             self.transition += [reward, next_state, done]
-            self.memory.store(*self.transition)
+            
+            # N-step transition
+            if self.use_n_step:
+                one_step_transition = self.memory_n.store(*self.transition)
+            # 1-step transition
+            else:
+                one_step_transition = self.transition
+
+            # add a single step transition
+            if one_step_transition:
+                self.memory.store(*one_step_transition)
     
         return next_state, reward, done
 
@@ -112,6 +132,16 @@ class DQNAgent:
         samples = self.memory.sample_batch()
 
         loss = self._compute_dqn_loss(samples)
+
+        # N-step Learning loss
+        # we are gonna combine 1-step loss and n-step loss so as to
+        # prevent high-variance.
+        indices = samples["indices"]
+        if self.use_n_step:
+            samples = self.memory_n.sample_batch_from_idxs(indices)
+            gamma = self.gamma ** self.n_step
+            n_loss = self._compute_dqn_loss(samples, gamma)
+            loss += n_loss
 
         self.optimizer.zero_grad()
         loss.backward()
