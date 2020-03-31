@@ -23,17 +23,17 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Double DQN use can be enabled using this
 double_dqn = True
 
-# for experience replay to be randomly sampled
-replay_method = RandomReplay(obs_dim, memory_size, batch_size)
+# # for experience replay to be randomly sampled
+# replay_method = RandomReplay(obs_dim, memory_size, batch_size)
 
 #----------------------------------------------------
-# using N-Step Learning
-n_step = 3
-gamma = 0.99
-memory = RandomReplay(obs_dim, memory_size, batch_size, n_step = n_step)
-memory_n = RandomReplay(obs_dim, memory_size, batch_size, n_step = n_step, gamma = gamma)
-network = VanillaDQN(obs_dim, 128, action_dim)
-agent = DQNAgent(env, network, memory, memory_size, batch_size, target_update, epsilon_decay, double_dqn, n_step=n_step, gamma=gamma, memory_n=memory_n)
+# # using N-Step Learning
+# n_step = 3
+# gamma = 0.99
+# memory = RandomReplay(obs_dim, memory_size, batch_size, n_step = n_step)
+# memory_n = RandomReplay(obs_dim, memory_size, batch_size, n_step = n_step, gamma = gamma)
+# network = VanillaDQN(obs_dim, 128, action_dim)
+# agent = DQNAgent(env, network, memory, memory_size, batch_size, target_update, epsilon_decay, double_dqn, n_step=n_step, gamma=gamma, memory_n=memory_n)
 
 # # Using the simplest DQN
 # network = VanillaDQN(obs_dim, 128, action_dim)
@@ -67,6 +67,23 @@ agent = DQNAgent(env, network, memory, memory_size, batch_size, target_update, e
 # 				epsilon_decay, double_dqn=True, is_noisy=False, n_step=1,
 # 				is_categorical=True, v_min=v_min, v_max=v_max, # is_categorical enables the special loss function calculation for categorical DQN
 # 				atom_size=atom_size)
+
+# using Rainbow DQN
+n_step = 3
+gamma = 0.99
+v_min = 0.0
+v_max = 200.0
+atom_size = 51
+memory = PrioritizedReplay(obs_dim, memory_size, batch_size, n_step = n_step)
+memory_n = PrioritizedReplay(obs_dim, memory_size, batch_size, n_step = n_step, gamma = gamma)
+support = torch.linspace(v_min, v_max, atom_size).to(device)
+network = RainbowDQN(obs_dim, 128, action_dim, atom_size, support) 
+agent = DQNAgent(env, network, memory, 
+				memory_size, batch_size, target_update, 
+				epsilon_decay, double_dqn=True, is_noisy=True, n_step=n_step, gamma=gamma, memory_n=memory_n,
+				is_categorical=True, v_min=v_min, v_max=v_max, # is_categorical enables the special loss function calculation for categorical DQN
+				atom_size=atom_size)
+
 #-----------------------------------------------------
 
 # Training the agent
